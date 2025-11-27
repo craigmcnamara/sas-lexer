@@ -4189,6 +4189,39 @@ fn test_macro_rare_stats(#[case] contents: &str, #[case] expected_token: Vec<imp
     ],
     NO_ERRORS,
 )]
+// Double-star comments with **; terminator (balanced form)
+#[case::double_star_simple("** simple comment **;",
+    vec![
+        ("** simple comment **;", TokenType::PredictedCommentStat),
+    ],
+    NO_ERRORS,
+)]
+#[case::double_star_with_internal_semi(r#"**  VAR1 HAS VALUE "X" - NOTE ; 01-Jan-20 (AB) ;  **;"#,
+    vec![
+        (r#"**  VAR1 HAS VALUE "X" - NOTE ; 01-Jan-20 (AB) ;  **;"#, TokenType::PredictedCommentStat),
+    ],
+    NO_ERRORS,
+)]
+#[case::double_star_multiple_internal_semi("** a ; b ; c ; **;",
+    vec![
+        ("** a ; b ; c ; **;", TokenType::PredictedCommentStat),
+    ],
+    NO_ERRORS,
+)]
+#[case::double_star_with_following_code("** comment ; with ; semis **;data;",
+    vec![
+        ("** comment ; with ; semis **;", TokenType::PredictedCommentStat),
+        ("data", TokenType::KwData),
+        (";", TokenType::SEMI),
+    ],
+    NO_ERRORS,
+)]
+#[case::double_star_multiline("** line1 ; \n line2 ; **;",
+    vec![
+        ("** line1 ; \n line2 ; **;", TokenType::PredictedCommentStat),
+    ],
+    NO_ERRORS,
+)]
 #[case::last_line_simple("data;*--comment--",
 vec![
     ("data", TokenType::KwData),

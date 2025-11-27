@@ -3916,25 +3916,101 @@ impl Lexer<'_> {
     /// <https://documentation.sas.com/doc/en/pgmsascdc/9.4_3.5/mcrolref/n17rxjs5x93mghn1mdxesvg78drx.htm>
     /// and
     /// <https://sas.service-now.com/csm?id=kb_article_view&sysparm_article=KB0036213>
+    /// Lookahead to determine if a `**` comment has a balanced `**;` terminator.
+    /// Returns true if `**;` appears before another `**` that could start a new comment.
+    /// The cursor should be positioned after the first `*` (i.e., pointing at the second `*`).
+    ///
+    /// The algorithm:
+    /// - Scan forward looking for `**` sequences
+    /// - If we find `**` followed immediately by `;`, it's a balanced comment terminator
+    /// - If we find `**` followed by anything else, it's a new comment starting
+    /// - If we reach EOF without finding either, it's an inline comment
+    fn has_balanced_comment_terminator(&self) -> bool {
+        let remaining = self.cursor.as_str();
+        let bytes = remaining.as_bytes();
+
+        let mut i = 0;
+        while i < bytes.len() {
+            // Look for * character
+            if bytes.get(i) == Some(&b'*') {
+                // Check if next char is also *
+                if bytes.get(i + 1) == Some(&b'*') {
+                    // Found **. Check what comes after.
+                    if bytes.get(i + 2) == Some(&b';') {
+                        // Found **; - this is a balanced comment terminator
+                        return true;
+                    }
+                    // Found ** followed by something else (or EOF)
+                    // This is either a new comment starting, or malformed
+                    // In either case, our current comment should be inline
+                    // But wait - we need to skip the first ** (which is our opening)
+                    // Only count this as a "new comment" if we've moved past position 0
+                    if i > 0 {
+                        return false;
+                    }
+                    // Skip past the opening **
+                    i += 2;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+
+        // EOF without finding **; or new ** - treat as inline comment
+        false
+    }
+
     fn lex_predicted_comment(&mut self) -> bool {
         // If we are mid open code statement, it can't be a comment
         if self.pending_stat() {
             return false;
         }
 
+        // Check if this starts with ** (double star)
+        // The first * was already consumed by lex_symbols, so we peek at the next char
+        let starts_with_double_star = self.cursor.peek() == Some('*');
+
+        // Determine if this is a balanced comment (ends with **;) or inline (ends with ;)
+        // A ** comment is only balanced if there's a **; terminator before any standalone ;
+        let is_balanced_comment =
+            starts_with_double_star && self.has_balanced_comment_terminator();
+
         // Check if we are in open code or not
         if self.macro_nesting_level == 0 {
             // Non-macro code - easy
-            while let Some(c) = self.cursor.advance() {
-                match c {
-                    '\n' => {
-                        self.add_line();
+            if is_balanced_comment {
+                // ** comment with **; terminator (balanced form)
+                // Track the previous two characters to detect **; sequence
+                let mut prev_char = '\0';
+                let mut prev_prev_char = '\0';
+
+                while let Some(c) = self.cursor.advance() {
+                    match c {
+                        '\n' => {
+                            self.add_line();
+                        }
+                        ';' if prev_char == '*' && prev_prev_char == '*' => {
+                            // Found **; - end of the comment
+                            break;
+                        }
+                        _ => {}
                     }
-                    ';' => {
-                        // Found the end of the comment
-                        break;
+                    prev_prev_char = prev_char;
+                    prev_char = c;
+                }
+            } else {
+                // Regular * comment or ** without balanced terminator - ends at first semicolon
+                while let Some(c) = self.cursor.advance() {
+                    match c {
+                        '\n' => {
+                            self.add_line();
+                        }
+                        ';' => {
+                            // Found the end of the comment
+                            break;
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
 
@@ -3954,38 +4030,69 @@ impl Lexer<'_> {
         // Checkpoint to be able to rollback
         self.checkpoint();
 
-        while let Some(c) = self.cursor.advance() {
-            match c {
-                '\n' => {
-                    self.add_line();
-                }
-                '%' if self
-                    .cursor
-                    .peek()
-                    .is_some_and(is_valid_unicode_sas_name_start) =>
-                {
-                    // Ok, we hit a macro call or a macro stat. Rollback and return
-                    // We assume the following usage possible:
-                    // ```sas
-                    // macro m; * 2 %mend;
-                    // data _null_; a = 1 %m();
-                    // ```
-                    // hence we rollback, and tell the caller "no, this is not a comment".
-                    //
-                    // Even if this is a semi-legit, non-recommended start comment, like:
-                    // ```sas
-                    // %macro m; *let a=b; comment tail; %mend;
-                    // ```
-                    // we still defer to the parser to handle it.
-                    self.rollback();
+        if is_balanced_comment {
+            // ** comment in macro with **; terminator
+            let mut prev_char = '\0';
+            let mut prev_prev_char = '\0';
 
-                    return false;
+            while let Some(c) = self.cursor.advance() {
+                match c {
+                    '\n' => {
+                        self.add_line();
+                    }
+                    '%' if self
+                        .cursor
+                        .peek()
+                        .is_some_and(is_valid_unicode_sas_name_start) =>
+                    {
+                        // Hit a macro call or statement - rollback
+                        self.rollback();
+                        return false;
+                    }
+                    ';' if prev_char == '*' && prev_prev_char == '*' => {
+                        // Found **; - end of the comment
+                        break;
+                    }
+                    _ => {}
                 }
-                ';' => {
-                    // Found the end of the comment
-                    break;
+                prev_prev_char = prev_char;
+                prev_char = c;
+            }
+        } else {
+            // Regular * comment or ** without balanced terminator in macro
+            while let Some(c) = self.cursor.advance() {
+                match c {
+                    '\n' => {
+                        self.add_line();
+                    }
+                    '%' if self
+                        .cursor
+                        .peek()
+                        .is_some_and(is_valid_unicode_sas_name_start) =>
+                    {
+                        // Ok, we hit a macro call or a macro stat. Rollback and return
+                        // We assume the following usage possible:
+                        // ```sas
+                        // macro m; * 2 %mend;
+                        // data _null_; a = 1 %m();
+                        // ```
+                        // hence we rollback, and tell the caller "no, this is not a comment".
+                        //
+                        // Even if this is a semi-legit, non-recommended start comment, like:
+                        // ```sas
+                        // %macro m; *let a=b; comment tail; %mend;
+                        // ```
+                        // we still defer to the parser to handle it.
+                        self.rollback();
+
+                        return false;
+                    }
+                    ';' => {
+                        // Found the end of the comment
+                        break;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 

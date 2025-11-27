@@ -3922,19 +3922,46 @@ impl Lexer<'_> {
             return false;
         }
 
+        // Check if this is a ** comment (balanced form, should end with **;)
+        // The first * was already consumed by lex_symbols, so we peek at the next char
+        let is_double_star_comment = self.cursor.peek() == Some('*');
+
         // Check if we are in open code or not
         if self.macro_nesting_level == 0 {
             // Non-macro code - easy
-            while let Some(c) = self.cursor.advance() {
-                match c {
-                    '\n' => {
-                        self.add_line();
+            if is_double_star_comment {
+                // ** comment - look for **; terminator (balanced form)
+                // Track the previous two characters to detect **; sequence
+                let mut prev_char = '\0';
+                let mut prev_prev_char = '\0';
+
+                while let Some(c) = self.cursor.advance() {
+                    match c {
+                        '\n' => {
+                            self.add_line();
+                        }
+                        ';' if prev_char == '*' && prev_prev_char == '*' => {
+                            // Found **; - end of the comment
+                            break;
+                        }
+                        _ => {}
                     }
-                    ';' => {
-                        // Found the end of the comment
-                        break;
+                    prev_prev_char = prev_char;
+                    prev_char = c;
+                }
+            } else {
+                // Regular * comment - ends at first semicolon
+                while let Some(c) = self.cursor.advance() {
+                    match c {
+                        '\n' => {
+                            self.add_line();
+                        }
+                        ';' => {
+                            // Found the end of the comment
+                            break;
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
 
@@ -3954,38 +3981,69 @@ impl Lexer<'_> {
         // Checkpoint to be able to rollback
         self.checkpoint();
 
-        while let Some(c) = self.cursor.advance() {
-            match c {
-                '\n' => {
-                    self.add_line();
-                }
-                '%' if self
-                    .cursor
-                    .peek()
-                    .is_some_and(is_valid_unicode_sas_name_start) =>
-                {
-                    // Ok, we hit a macro call or a macro stat. Rollback and return
-                    // We assume the following usage possible:
-                    // ```sas
-                    // macro m; * 2 %mend;
-                    // data _null_; a = 1 %m();
-                    // ```
-                    // hence we rollback, and tell the caller "no, this is not a comment".
-                    //
-                    // Even if this is a semi-legit, non-recommended start comment, like:
-                    // ```sas
-                    // %macro m; *let a=b; comment tail; %mend;
-                    // ```
-                    // we still defer to the parser to handle it.
-                    self.rollback();
+        if is_double_star_comment {
+            // ** comment in macro - look for **; terminator
+            let mut prev_char = '\0';
+            let mut prev_prev_char = '\0';
 
-                    return false;
+            while let Some(c) = self.cursor.advance() {
+                match c {
+                    '\n' => {
+                        self.add_line();
+                    }
+                    '%' if self
+                        .cursor
+                        .peek()
+                        .is_some_and(is_valid_unicode_sas_name_start) =>
+                    {
+                        // Hit a macro call or statement - rollback
+                        self.rollback();
+                        return false;
+                    }
+                    ';' if prev_char == '*' && prev_prev_char == '*' => {
+                        // Found **; - end of the comment
+                        break;
+                    }
+                    _ => {}
                 }
-                ';' => {
-                    // Found the end of the comment
-                    break;
+                prev_prev_char = prev_char;
+                prev_char = c;
+            }
+        } else {
+            // Regular * comment in macro
+            while let Some(c) = self.cursor.advance() {
+                match c {
+                    '\n' => {
+                        self.add_line();
+                    }
+                    '%' if self
+                        .cursor
+                        .peek()
+                        .is_some_and(is_valid_unicode_sas_name_start) =>
+                    {
+                        // Ok, we hit a macro call or a macro stat. Rollback and return
+                        // We assume the following usage possible:
+                        // ```sas
+                        // macro m; * 2 %mend;
+                        // data _null_; a = 1 %m();
+                        // ```
+                        // hence we rollback, and tell the caller "no, this is not a comment".
+                        //
+                        // Even if this is a semi-legit, non-recommended start comment, like:
+                        // ```sas
+                        // %macro m; *let a=b; comment tail; %mend;
+                        // ```
+                        // we still defer to the parser to handle it.
+                        self.rollback();
+
+                        return false;
+                    }
+                    ';' => {
+                        // Found the end of the comment
+                        break;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 

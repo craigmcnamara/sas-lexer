@@ -3917,23 +3917,46 @@ impl Lexer<'_> {
     /// and
     /// <https://sas.service-now.com/csm?id=kb_article_view&sysparm_article=KB0036213>
     /// Lookahead to determine if a `**` comment has a balanced `**;` terminator.
-    /// Returns true if `**;` appears anywhere in the remaining text.
+    /// Returns true if `**;` appears before another `**` that could start a new comment.
     /// The cursor should be positioned after the first `*` (i.e., pointing at the second `*`).
+    ///
+    /// The algorithm:
+    /// - Scan forward looking for `**` sequences
+    /// - If we find `**` followed immediately by `;`, it's a balanced comment terminator
+    /// - If we find `**` followed by anything else, it's a new comment starting
+    /// - If we reach EOF without finding either, it's an inline comment
     fn has_balanced_comment_terminator(&self) -> bool {
-        let mut chars = self.cursor.chars();
-        let mut prev_char = '\0';
-        let mut prev_prev_char = '\0';
+        let remaining = self.cursor.as_str();
+        let bytes = remaining.as_bytes();
 
-        while let Some(c) = chars.next() {
-            if c == ';' && prev_char == '*' && prev_prev_char == '*' {
-                // Found **; - this is a balanced comment
-                return true;
+        let mut i = 0;
+        while i < bytes.len() {
+            // Look for * character
+            if bytes.get(i) == Some(&b'*') {
+                // Check if next char is also *
+                if bytes.get(i + 1) == Some(&b'*') {
+                    // Found **. Check what comes after.
+                    if bytes.get(i + 2) == Some(&b';') {
+                        // Found **; - this is a balanced comment terminator
+                        return true;
+                    }
+                    // Found ** followed by something else (or EOF)
+                    // This is either a new comment starting, or malformed
+                    // In either case, our current comment should be inline
+                    // But wait - we need to skip the first ** (which is our opening)
+                    // Only count this as a "new comment" if we've moved past position 0
+                    if i > 0 {
+                        return false;
+                    }
+                    // Skip past the opening **
+                    i += 2;
+                    continue;
+                }
             }
-            prev_prev_char = prev_char;
-            prev_char = c;
+            i += 1;
         }
 
-        // EOF without finding **; terminator - treat as inline comment
+        // EOF without finding **; or new ** - treat as inline comment
         false
     }
 

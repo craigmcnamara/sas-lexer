@@ -3916,21 +3916,47 @@ impl Lexer<'_> {
     /// <https://documentation.sas.com/doc/en/pgmsascdc/9.4_3.5/mcrolref/n17rxjs5x93mghn1mdxesvg78drx.htm>
     /// and
     /// <https://sas.service-now.com/csm?id=kb_article_view&sysparm_article=KB0036213>
+    /// Lookahead to determine if a `**` comment has a balanced `**;` terminator.
+    /// Returns true if `**;` appears anywhere in the remaining text.
+    /// The cursor should be positioned after the first `*` (i.e., pointing at the second `*`).
+    fn has_balanced_comment_terminator(&self) -> bool {
+        let mut chars = self.cursor.chars();
+        let mut prev_char = '\0';
+        let mut prev_prev_char = '\0';
+
+        while let Some(c) = chars.next() {
+            if c == ';' && prev_char == '*' && prev_prev_char == '*' {
+                // Found **; - this is a balanced comment
+                return true;
+            }
+            prev_prev_char = prev_char;
+            prev_char = c;
+        }
+
+        // EOF without finding **; terminator - treat as inline comment
+        false
+    }
+
     fn lex_predicted_comment(&mut self) -> bool {
         // If we are mid open code statement, it can't be a comment
         if self.pending_stat() {
             return false;
         }
 
-        // Check if this is a ** comment (balanced form, should end with **;)
+        // Check if this starts with ** (double star)
         // The first * was already consumed by lex_symbols, so we peek at the next char
-        let is_double_star_comment = self.cursor.peek() == Some('*');
+        let starts_with_double_star = self.cursor.peek() == Some('*');
+
+        // Determine if this is a balanced comment (ends with **;) or inline (ends with ;)
+        // A ** comment is only balanced if there's a **; terminator before any standalone ;
+        let is_balanced_comment =
+            starts_with_double_star && self.has_balanced_comment_terminator();
 
         // Check if we are in open code or not
         if self.macro_nesting_level == 0 {
             // Non-macro code - easy
-            if is_double_star_comment {
-                // ** comment - look for **; terminator (balanced form)
+            if is_balanced_comment {
+                // ** comment with **; terminator (balanced form)
                 // Track the previous two characters to detect **; sequence
                 let mut prev_char = '\0';
                 let mut prev_prev_char = '\0';
@@ -3950,7 +3976,7 @@ impl Lexer<'_> {
                     prev_char = c;
                 }
             } else {
-                // Regular * comment - ends at first semicolon
+                // Regular * comment or ** without balanced terminator - ends at first semicolon
                 while let Some(c) = self.cursor.advance() {
                     match c {
                         '\n' => {
@@ -3981,8 +4007,8 @@ impl Lexer<'_> {
         // Checkpoint to be able to rollback
         self.checkpoint();
 
-        if is_double_star_comment {
-            // ** comment in macro - look for **; terminator
+        if is_balanced_comment {
+            // ** comment in macro with **; terminator
             let mut prev_char = '\0';
             let mut prev_prev_char = '\0';
 
@@ -4010,7 +4036,7 @@ impl Lexer<'_> {
                 prev_char = c;
             }
         } else {
-            // Regular * comment in macro
+            // Regular * comment or ** without balanced terminator in macro
             while let Some(c) = self.cursor.advance() {
                 match c {
                     '\n' => {

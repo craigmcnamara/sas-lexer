@@ -4222,6 +4222,52 @@ fn test_macro_rare_stats(#[case] contents: &str, #[case] expected_token: Vec<imp
     ],
     NO_ERRORS,
 )]
+// Double-star inline comment WITHOUT **; terminator - should end at first semicolon
+#[case::double_star_inline_no_balanced_terminator("** Decision-making;x = 1;",
+    vec![
+        ("** Decision-making;", TokenType::PredictedCommentStat),
+        ("x", TokenType::Identifier),
+        (" ", TokenType::WS),
+        ("=", TokenType::ASSIGN),
+        (" ", TokenType::WS),
+        ("1", TokenType::IntegerLiteral),
+        (";", TokenType::SEMI),
+    ],
+    NO_ERRORS,
+)]
+// Double-star inline comment after code - should end at first semicolon
+#[case::double_star_inline_after_code("iC1 = iC1;** Decision-making;iC2a = iC2a;",
+    vec![
+        ("iC1", TokenType::Identifier),
+        (" ", TokenType::WS),
+        ("=", TokenType::ASSIGN),
+        (" ", TokenType::WS),
+        ("iC1", TokenType::Identifier),
+        (";", TokenType::SEMI),
+        ("** Decision-making;", TokenType::PredictedCommentStat),
+        ("iC2a", TokenType::Identifier),
+        (" ", TokenType::WS),
+        ("=", TokenType::ASSIGN),
+        (" ", TokenType::WS),
+        ("iC2a", TokenType::Identifier),
+        (";", TokenType::SEMI),
+    ],
+    NO_ERRORS,
+)]
+// Multiple comments: balanced then inline
+#[case::balanced_then_inline_comments("** VARS **;** line comment;x = 1;",
+    vec![
+        ("** VARS **;", TokenType::PredictedCommentStat),
+        ("** line comment;", TokenType::PredictedCommentStat),
+        ("x", TokenType::Identifier),
+        (" ", TokenType::WS),
+        ("=", TokenType::ASSIGN),
+        (" ", TokenType::WS),
+        ("1", TokenType::IntegerLiteral),
+        (";", TokenType::SEMI),
+    ],
+    NO_ERRORS,
+)]
 #[case::last_line_simple("data;*--comment--",
 vec![
     ("data", TokenType::KwData),
